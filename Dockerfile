@@ -26,7 +26,7 @@ RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin mini \
  && mkdir -p /app /data \
  && chown mini:mini /data
 
-COPY server.py /app/server.py
+COPY server2.py /app/server.py
 
 USER mini
 WORKDIR /data
