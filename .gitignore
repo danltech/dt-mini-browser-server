@@ -1,0 +1,8 @@
+# Server (.gitignore)
+venv/
+__pycache__/
+*.pyc
+states/
+downloads/
+debug/
+server.py
