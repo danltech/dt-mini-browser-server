@@ -153,6 +153,10 @@ EXTRACT_JS = r"""
     items.push(['r', R(v[0]), R(v[1]), Math.max(1, R(v[2])), Math.max(1, R(v[3])), argb, R(rad || 0)]);
   };
 
+  const absUrl = (u) => {
+    if (!u || u.startsWith('data:') || u.startsWith('blob:') || u.startsWith('http')) return u;
+    try { return new URL(u, document.baseURI).href; } catch (e) { return u; }
+  };
   const text = (node, cs, clip) => {
     const raw = node.nodeValue;
     if (!raw || !raw.trim()) return;
@@ -167,28 +171,62 @@ EXTRACT_JS = r"""
     if (td.includes('line-through')) flags |= 8;
     if (/mono|courier|consolas/i.test(cs.fontFamily)) flags |= 16;
     const tt = cs.textTransform;
+    // Prefer full-line clientRects when possible (more accurate line boxes than word-by-word)
     const range = document.createRange();
+    range.selectNodeContents(node);
+    let rects = [];
+    try { rects = Array.from(range.getClientRects()); } catch (e) {}
     const lines = [];
-    const re = /\S+/g; let m;
-    while ((m = re.exec(raw))) {
-      range.setStart(node, m.index); range.setEnd(node, m.index + m[0].length);
-      const rr = range.getBoundingClientRect();
-      if (rr.width < 0.5 || rr.height < 1) continue;
-      const L = lines.length ? lines[lines.length - 1] : null;
-      if (L && Math.abs(rr.top - L.top) < rr.height * 0.5 && rr.left >= L.left) {
-        L.words.push(m[0]); L.right = Math.max(L.right, rr.right); L.bottom = Math.max(L.bottom, rr.bottom);
-      } else {
-        lines.push({top: rr.top, left: rr.left, right: rr.right, bottom: rr.bottom, words: [m[0]]});
+    if (rects.length > 0 && rects.length <= 40) {
+      // Use line boxes from the browser; approximate text by splitting on whitespace in reading order
+      const words = [];
+      const re = /\S+/g; let m;
+      while ((m = re.exec(raw))) {
+        range.setStart(node, m.index); range.setEnd(node, m.index + m[0].length);
+        const rr = range.getBoundingClientRect();
+        if (rr.width >= 0.5 && rr.height >= 1) words.push({t: m[0], top: rr.top, left: rr.left, right: rr.right, bottom: rr.bottom});
       }
-    }
-    for (const L of lines) {
-      const bl = [L.left + sx, L.top + sy, L.right - L.left, L.bottom - L.top];
-      if (!inter(bl, clip)) continue;
-      let s = L.words.join(' ');
-      if (tt === 'uppercase') s = s.toUpperCase();
-      else if (tt === 'lowercase') s = s.toLowerCase();
-      else if (tt === 'capitalize') s = s.replace(/(^|\s)(\S)/g, (a, b, c) => b + c.toUpperCase());
-      items.push(['t', R(bl[0]), R(bl[1]), Math.max(1, R(bl[2])), R(bl[3]), s, color, Math.round(fs * 10) / 10, flags]);
+      for (const r of rects) {
+        if (r.width < 0.5 || r.height < 1) continue;
+        const midY = r.top + r.height * 0.5;
+        const lineWords = words.filter(w => w.top < midY && w.bottom > midY && w.left < r.right + 2 && w.right > r.left - 2);
+        if (!lineWords.length) continue;
+        lineWords.sort((a, b) => a.left - b.left);
+        let s = lineWords.map(w => w.t).join(' ');
+        if (tt === 'uppercase') s = s.toUpperCase();
+        else if (tt === 'lowercase') s = s.toLowerCase();
+        else if (tt === 'capitalize') s = s.replace(/(^|\s)(\S)/g, (a, b, c) => b + c.toUpperCase());
+        // Pad width so older Android fonts (wider metrics) still fit without overflowing into neighbors
+        const pad = Math.max(2, fs * 0.18);
+        const bl = [r.left + sx, r.top + sy, (r.right - r.left) + pad, r.height];
+        if (!inter(bl, clip)) continue;
+        items.push(['t', R(bl[0]), R(bl[1]), Math.max(1, R(bl[2])), R(bl[3]), s, color, Math.round(fs * 10) / 10, flags]);
+      }
+    } else {
+      // Fallback: classic word grouping (stricter vertical tolerance)
+      const re = /\S+/g; let m;
+      while ((m = re.exec(raw))) {
+        range.setStart(node, m.index); range.setEnd(node, m.index + m[0].length);
+        const rr = range.getBoundingClientRect();
+        if (rr.width < 0.5 || rr.height < 1) continue;
+        const L = lines.length ? lines[lines.length - 1] : null;
+        const tol = Math.min(rr.height, L ? (L.bottom - L.top) : rr.height) * 0.35;
+        if (L && Math.abs(rr.top - L.top) < tol && rr.left >= L.left - 1) {
+          L.words.push(m[0]); L.right = Math.max(L.right, rr.right); L.bottom = Math.max(L.bottom, rr.bottom);
+        } else {
+          lines.push({top: rr.top, left: rr.left, right: rr.right, bottom: rr.bottom, words: [m[0]]});
+        }
+      }
+      for (const L of lines) {
+        const pad = Math.max(2, fs * 0.18);
+        const bl = [L.left + sx, L.top + sy, (L.right - L.left) + pad, L.bottom - L.top];
+        if (!inter(bl, clip)) continue;
+        let s = L.words.join(' ');
+        if (tt === 'uppercase') s = s.toUpperCase();
+        else if (tt === 'lowercase') s = s.toLowerCase();
+        else if (tt === 'capitalize') s = s.replace(/(^|\s)(\S)/g, (a, b, c) => b + c.toUpperCase());
+        items.push(['t', R(bl[0]), R(bl[1]), Math.max(1, R(bl[2])), R(bl[3]), s, color, Math.round(fs * 10) / 10, flags]);
+      }
     }
   };
 
@@ -199,13 +237,14 @@ EXTRACT_JS = r"""
     if (bg >>> 24) rect(bx, clip, bg, rad);
 
     const bi = cs.backgroundImage;
-    if (bi && bi.startsWith('url(')) {
+    if (bi && bi !== 'none' && bi.includes('url(')) {
       const m = /url\(["']?(.*?)["']?\)/.exec(bi);
-      const sz = cs.backgroundSize;
+      const sz = (cs.backgroundSize || '').toLowerCase();
       const v = inter(bx, clip);
-      if (m && v && bx[2] >= 40 && bx[3] >= 40 &&
-          (sz === 'cover' || sz === 'contain' || sz === '100%' || sz === '100% 100%')) {
-        const it = ['i', R(bx[0]), R(bx[1]), R(bx[2]), R(bx[3]), m[1], sz === 'cover' ? 1 : 0];
+      // Lower size threshold + accept more background-size values (common on product pages)
+      if (m && m[1] && v && bx[2] >= 16 && bx[3] >= 16) {
+        const mode = (sz.includes('cover') || sz === '100% 100%' || sz === '100%') ? 1 : 0;
+        const it = ['i', R(bx[0]), R(bx[1]), R(bx[2]), R(bx[3]), absUrl(m[1]), mode];
         if (clip) it.push([R(v[0]), R(v[1]), R(v[2]), R(v[3])]);
         items.push(it);
       }
@@ -228,10 +267,17 @@ EXTRACT_JS = r"""
     }
 
     if (ln === 'img') {
-      const u = el.currentSrc || el.src;
+      let u = el.currentSrc || el.src || '';
+      if (!u) u = el.getAttribute('data-src') || el.getAttribute('data-lazy-src') || el.getAttribute('data-original') || '';
+      if (!u && el.srcset) {
+        const first = (el.srcset || '').split(',')[0].trim().split(/\s+/)[0];
+        if (first) u = first;
+      }
+      u = absUrl(u);
       const v = inter(bx, clip);
-      if (u && v) {
-        const it = ['i', R(bx[0]), R(bx[1]), R(bx[2]), R(bx[3]), u, cs.objectFit === 'cover' ? 1 : 0];
+      if (u && v && bx[2] >= 1 && bx[3] >= 1) {
+        const fit = (cs.objectFit || '').toLowerCase();
+        const it = ['i', R(bx[0]), R(bx[1]), R(bx[2]), R(bx[3]), u, (fit === 'cover' || fit === 'none') ? 1 : 0];
         if (clip) it.push([R(v[0]), R(v[1]), R(v[2]), R(v[3])]);
         items.push(it);
       }
@@ -670,16 +716,27 @@ def shrink(raw, tw, quality):
 
 
 async def fetch_image(s, url):
+    if not url:
+        return None
     if url.startswith("data:"):
         try:
             head, _, payload = url.partition(",")
             return base64.b64decode(payload) if ";base64" in head else unquote_to_bytes(payload)
         except Exception:
             return None
+    # Resolve relative / protocol-relative URLs against the page
+    if url.startswith("//"):
+        url = "https:" + url
+    elif not url.startswith(("http://", "https://")):
+        try:
+            from urllib.parse import urljoin
+            url = urljoin(s.page.url if s.page else "", url)
+        except Exception:
+            return None
     if not await url_allowed(url):
         return None
     try:
-        r = await s.ctx.request.get(url, headers={"Referer": s.page.url}, timeout=15000)
+        r = await s.ctx.request.get(url, headers={"Referer": s.page.url if s.page else url}, timeout=15000)
         if not r.ok:
             return None
         body = await r.body()
@@ -971,6 +1028,8 @@ async def on_start(app):
     global CHROME_VER, UA
     app["pw"] = await async_playwright().start()
     kw = {"headless": True, "args": ["--disable-dev-shm-usage"]}
+    if os.environ.get("MINI_NO_SANDBOX") == "1":
+        kw["args"].append("--no-sandbox")
     if CHROME:
         kw["executable_path"] = CHROME
     app["browser"] = await app["pw"].chromium.launch(**kw)

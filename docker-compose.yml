@@ -1,0 +1,25 @@
+services:
+  mini-server:
+    image: ghcr.io/danltech/dt-mini-browser-server:latest
+    container_name: dt-mini-server
+    restart: unless-stopped
+    init: true                      # reaps zombie Chromium processes
+    ports:
+      - "8080:8080"                 # LAN access. Local only: "127.0.0.1:8080:8080"
+    environment:
+      MINI_LOCALE: "de-AT"
+      # MINI_PORT: "8080"
+      # MINI_SHOT: "0"
+      # MINI_ALLOW_PRIVATE: "1"     # ⚠️ disables the internal-network protection
+    volumes:
+      - mini-data:/data             # cookies/sessions, downloads, debug output
+    shm_size: "256mb"
+    mem_limit: 2g
+    pids_limit: 512
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  mini-data:

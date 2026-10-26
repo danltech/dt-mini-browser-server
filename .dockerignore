@@ -1,0 +1,12 @@
+.git
+.github
+venv/
+__pycache__/
+*.pyc
+states/
+downloads/
+debug/
+*.md
+LICENSE
+docker-compose.yml
+server.py
