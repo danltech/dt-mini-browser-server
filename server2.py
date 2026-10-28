@@ -87,6 +87,7 @@ MAX_DOWNLOAD_MB = 80
 # Fallback, wird beim Start durch echte Chromium-Version ersetzt
 CHROME_VER = "124.0.0.0"
 UA_PRODUCT = "DTMiniBrowser-Alpha/0.9"
+DTMB_VER = "0.9-r3"
 
 def build_ua(android_ver="13", model="Pixel 7"):
     """Baut einen Mobile-Chrome-UA mit echter Chrome-Version + Client-Gerätedaten."""
@@ -1237,6 +1238,7 @@ async def on_start(app):
         CHROME_VER = ver.split()[0] if ver else CHROME_VER
         UA = build_ua()
         log.info("Chromium gestartet, Version %s", CHROME_VER)
+        log.info("DTMiniBrowserServer, Version %s", DTMB_VER)
     except Exception as e:
         log.warning("Chrome-Version konnte nicht gelesen werden: %s", short(e))
         log.info("Chromium gestartet")
