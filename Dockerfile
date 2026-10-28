@@ -11,7 +11,8 @@ ENV PYTHONUNBUFFERED=1 \
     MINI_CHROME=/usr/bin/chromium \
     MINI_HOST=0.0.0.0 \
     MINI_PORT=8080 \
-    MINI_NO_SANDBOX=1
+    MINI_NO_SANDBOX=1 \
+    MINI_LOCALE=en-US
 
 # Distro Chromium (Debian security updates) + fonts.
 # Playwright's own Chromium build is NOT used (it gets blocked by some sites).

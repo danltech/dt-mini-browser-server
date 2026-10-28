@@ -71,9 +71,9 @@ from playwright.async_api import async_playwright
 HOST = os.environ.get("MINI_HOST", "0.0.0.0")
 PORT = int(os.environ.get("MINI_PORT", "8080"))
 CHROME = os.environ.get("MINI_CHROME", "")
-LOCALE = os.environ.get("MINI_LOCALE", "de-AT")
+LOCALE = os.environ.get("MINI_LOCALE", "en-US")
 SHOT = os.environ.get("MINI_SHOT", "1") != "0"
-ALLOW_PRIVATE = os.environ.get("MINI_ALLOW_PRIVATE") == "1"
+ALLOW_PRIVATE = os.environ.get("MINI_ALLOW_PRIVATE") == "0"
 MAX_SESSIONS = 4
 IDLE_SECONDS = 600
 DEBUG_DIR = Path("debug")
@@ -86,7 +86,7 @@ MAX_DOWNLOAD_MB = 80
 
 # Fallback, wird beim Start durch echte Chromium-Version ersetzt
 CHROME_VER = "124.0.0.0"
-UA_PRODUCT = "DanlMiniBrowser/1.0"
+UA_PRODUCT = "DTMiniBrowser-Alpha/0.9"
 
 def build_ua(android_ver="13", model="Pixel 7"):
     """Baut einen Mobile-Chrome-UA mit echter Chrome-Version + Client-Gerätedaten."""
