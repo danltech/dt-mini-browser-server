@@ -1,5 +1,5 @@
 # DT Mini Browser Server – container image (linux/amd64 + linux/arm64)
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-trixie
 
 # Set by CI to the newest Playwright release (Python driver only).
 # Empty = pip picks the latest at build time.
