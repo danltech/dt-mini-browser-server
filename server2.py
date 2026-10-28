@@ -118,8 +118,8 @@ INIT_JS = r"""
 """
 
 EXTRACT_JS = r"""
-() => {
-  const items = [];
+async () => {
+  let items = [];
   const sx = scrollX, sy = scrollY, R = Math.round;
   const VW = innerWidth, VH = innerHeight;
   // Overflow-Vollinhalt-Fix hilft Wikipedia, zerlegt aber Amazon-Layout → nur nicht-Amazon
@@ -157,6 +157,150 @@ EXTRACT_JS = r"""
     if (!u || u.startsWith('data:') || u.startsWith('blob:') || u.startsWith('http')) return u;
     try { return new URL(u, document.baseURI).href; } catch (e) { return u; }
   };
+
+  // ---- Hilfsfunktionen fuer CSS-Werte (Hintergrundbilder, object-position, ...)
+  const splitTop = (s) => {            // an Kommas auf oberster Ebene trennen
+    const out = []; let depth = 0, q = '', cur = '';
+    s = s || '';
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (q) { cur += ch; if (ch === '\\') cur += s[++i] || ''; else if (ch === q) q = ''; continue; }
+      if (ch === '"' || ch === "'") { q = ch; cur += ch; continue; }
+      if (ch === '(') depth++; else if (ch === ')') depth--;
+      if (ch === ',' && depth === 0) { out.push(cur.trim()); cur = ''; } else cur += ch;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  };
+  const tokens = (s) => {              // an Leerzeichen auf oberster Ebene trennen
+    const out = []; let depth = 0, cur = '';
+    for (const ch of (s || '').trim()) {
+      if (ch === '(') depth++; else if (ch === ')') depth--;
+      if (/\s/.test(ch) && depth === 0) { if (cur) out.push(cur); cur = ''; } else cur += ch;
+    }
+    if (cur) out.push(cur);
+    return out;
+  };
+  const evalLen = (tok, base) => {     // px / % / calc(..) -> px; null bei auto/unbekannt
+    if (!tok || tok === 'auto') return null;
+    const re = /([+-]?)\s*(\d*\.?\d+(?:e[+-]?\d+)?)(%|px)?/gi;
+    let m, tot = 0, any = false;
+    while ((m = re.exec(tok))) {
+      let v = parseFloat(m[2]); if (m[1] === '-') v = -v;
+      tot += m[3] === '%' ? base * v / 100 : v; any = true;
+    }
+    return any ? tot : null;
+  };
+  const pick = (arr, i) => arr[i % arr.length];
+  const inset = (bx, mode, cs) => {    // border-/padding-/content-box eines Elements
+    if (!mode || mode === 'border-box' || mode === 'text') return bx;
+    const pf = (p) => parseFloat(cs[p]) || 0;
+    let l = pf('borderLeftWidth'), t = pf('borderTopWidth'), r = pf('borderRightWidth'), b = pf('borderBottomWidth');
+    if (mode === 'content-box') {
+      l += pf('paddingLeft'); t += pf('paddingTop'); r += pf('paddingRight'); b += pf('paddingBottom');
+    }
+    return [bx[0] + l, bx[1] + t, Math.max(0, bx[2] - l - r), Math.max(0, bx[3] - t - b)];
+  };
+
+  // Natuerliche Bildgroesse (fuer Sprites): sofort, wenn im Cache; sonst nachladen + zweiter Durchlauf
+  const nat = new Map();
+  const pendingImgs = new Map();
+  const natural = (u) => {
+    if (nat.has(u)) return nat.get(u);
+    if (pendingImgs.has(u)) return null;
+    const im = new Image();
+    im.src = u;
+    if (im.complete) {
+      const v = im.naturalWidth > 0 && im.naturalHeight > 0 ? [im.naturalWidth, im.naturalHeight] : null;
+      nat.set(u, v);
+      return v;
+    }
+    pendingImgs.set(u, im);
+    return null;
+  };
+
+  // Bild-Item; Clip nur wenn das Bild ueber den sichtbaren Bereich hinausragt
+  const pushImg = (u, x, y, w, h, mode, vis) => {
+    const it = ['i', R(x), R(y), Math.max(1, R(w)), Math.max(1, R(h)), absUrl(u), mode];
+    const inside = vis[0] <= x + 0.5 && vis[1] <= y + 0.5 &&
+                   x + w <= vis[0] + vis[2] + 0.5 && y + h <= vis[1] + vis[3] + 0.5;
+    if (!inside) it.push([R(vis[0]), R(vis[1]), R(vis[2]), R(vis[3])]);
+    items.push(it);
+  };
+
+  // (Ggf. gekacheltes) Bild platzieren. orig = Positionierungsbereich, vis = sichtbarer Bereich
+  const placeTiles = (u, orig, vis, tw, th, px, py, rx, ry) => {
+    const rng = (p, t, lo, hi, rep) => {
+      if (!rep) return [p];
+      const k0 = Math.floor((lo - p) / t), k1 = Math.ceil((hi - p) / t) - 1;
+      const out = [];
+      for (let k = k0; k <= k1; k++) { out.push(p + k * t); if (out.length > 40) break; }
+      return out;
+    };
+    const xr = rng(px, tw, vis[0] - orig[0], vis[0] + vis[2] - orig[0], rx);
+    const yr = rng(py, th, vis[1] - orig[1], vis[1] + vis[3] - orig[1], ry);
+    if (xr.length * yr.length > 36) return;   // feine Muster-Kacheln: nicht darstellbar -> weglassen
+    for (const yy of yr) for (const xx of xr) {
+      const X = orig[0] + xx, Y = orig[1] + yy;
+      if (X + tw <= vis[0] + 0.5 || X >= vis[0] + vis[2] - 0.5 ||
+          Y + th <= vis[1] + 0.5 || Y >= vis[1] + vis[3] - 0.5) continue;
+      pushImg(u, X, Y, tw, th, 0, vis);
+    }
+  };
+
+  // Alle url()-Hintergrundebenen eines Elements (background-size/-position/-repeat/-origin/-clip)
+  const bgImages = (cs, bx, clip) => {
+    const bi = cs.backgroundImage;
+    if (!bi || bi === 'none' || !bi.includes('url(')) return;
+    const layers = splitTop(bi), n = layers.length;
+    const sizes = splitTop(cs.backgroundSize || 'auto'), poss = splitTop(cs.backgroundPosition || '0% 0%'),
+          reps = splitTop(cs.backgroundRepeat || 'repeat'), origins = splitTop(cs.backgroundOrigin || 'padding-box'),
+          clips = splitTop(cs.backgroundClip || 'border-box');
+    for (let i = n - 1; i >= 0; i--) {          // letzte Ebene liegt ganz unten
+      const m = /url\(\s*(["']?)(.*?)\1\s*\)/.exec(layers[i]);
+      if (!m || !m[2]) continue;
+      const u = absUrl(m[2]);
+      const orig = inset(bx, pick(origins, i), cs);
+      const vis = inter(inset(bx, pick(clips, i), cs), clip);
+      if (!vis || orig[2] < 1 || orig[3] < 1) continue;
+      const st = tokens(pick(sizes, i));
+      const pt = tokens(pick(poss, i));
+      const pxTok = pt[0] || '0%', pyTok = pt[1] || '50%';
+      const kw = (st[0] === 'cover' || st[0] === 'contain') ? st[0] : '';
+      const big = orig[2] >= 16 && orig[3] >= 16;
+      let tw, th;
+      if (kw) {
+        if (kw === 'cover' && pxTok === '50%' && pyTok === '50%') {   // zentriert: Client macht Cover selbst
+          pushImg(u, orig[0], orig[1], orig[2], orig[3], 1, vis);
+          continue;
+        }
+        const nz = natural(u);
+        if (!nz) { if (big) pushImg(u, orig[0], orig[1], orig[2], orig[3], kw === 'cover' ? 1 : 0, vis); continue; }
+        const s = kw === 'cover' ? Math.max(orig[2] / nz[0], orig[3] / nz[1])
+                                 : Math.min(orig[2] / nz[0], orig[3] / nz[1]);
+        tw = nz[0] * s; th = nz[1] * s;
+      } else {
+        let sw = evalLen(st[0], orig[2]), sh = evalLen(st[1] || 'auto', orig[3]);
+        if (sw === null || sh === null) {
+          const nz = natural(u);
+          if (!nz) { if (big) pushImg(u, orig[0], orig[1], orig[2], orig[3], 0, vis); continue; }
+          if (sw === null && sh === null) { sw = nz[0]; sh = nz[1]; }
+          else if (sw === null) sw = sh * nz[0] / nz[1];
+          else sh = sw * nz[1] / nz[0];
+        }
+        tw = sw; th = sh;
+      }
+      if (!(tw >= 1 && th >= 1)) continue;
+      const px = evalLen(pxTok, orig[2] - tw) ?? 0, py = evalLen(pyTok, orig[3] - th) ?? 0;
+      const rt = tokens(pick(reps, i));
+      let rx, ry;
+      if (rt[0] === 'repeat-x') { rx = true; ry = false; }
+      else if (rt[0] === 'repeat-y') { rx = false; ry = true; }
+      else { rx = rt[0] !== 'no-repeat'; ry = (rt[1] || rt[0]) !== 'no-repeat'; }
+      placeTiles(u, orig, vis, tw, th, px, py, rx, ry);
+    }
+  };
+
   const text = (node, cs, clip) => {
     const raw = node.nodeValue;
     if (!raw || !raw.trim()) return;
@@ -171,62 +315,60 @@ EXTRACT_JS = r"""
     if (td.includes('line-through')) flags |= 8;
     if (/mono|courier|consolas/i.test(cs.fontFamily)) flags |= 16;
     const tt = cs.textTransform;
-    // Prefer full-line clientRects when possible (more accurate line boxes than word-by-word)
+    const fixCase = (s) => {
+      if (tt === 'uppercase') return s.toUpperCase();
+      if (tt === 'lowercase') return s.toLowerCase();
+      if (tt === 'capitalize') return s.replace(/(^|\s)(\S)/g, (a, b, c) => b + c.toUpperCase());
+      return s;
+    };
+    // Wichtig: Box = exakt von erstem bis letztem WORT. Die Range-Rects enthalten sonst
+    // Leerzeichen am Rand (vor/nach <b>, <a>, ...) und der Client wuerde den (getrimmten)
+    // Text auf diese zu breite Box strecken -> Woerter kleben aneinander. Der Client skaliert
+    // die Textbreite selbst auf die Box, daher darf hier KEIN Extra-Padding drauf.
     const range = document.createRange();
     range.selectNodeContents(node);
     let rects = [];
     try { rects = Array.from(range.getClientRects()); } catch (e) {}
-    const lines = [];
+    const words = [];
+    const re = /\S+/g; let m;
+    while ((m = re.exec(raw))) {
+      range.setStart(node, m.index); range.setEnd(node, m.index + m[0].length);
+      const rr = range.getBoundingClientRect();
+      if (rr.width >= 0.5 && rr.height >= 1)
+        words.push({t: m[0], top: rr.top, left: rr.left, right: rr.right, bottom: rr.bottom, used: false});
+    }
+    if (!words.length) return;
+    const emit = (left, top, right, height, lw) => {
+      const bl = [left + sx, top + sy, right - left, height];
+      if (!inter(bl, clip)) return;
+      const s = fixCase(lw.map(w => w.t).join(' '));
+      items.push(['t', R(bl[0]), R(bl[1]), Math.max(1, R(bl[2])), R(bl[3]), s, color, Math.round(fs * 10) / 10, flags]);
+    };
     if (rects.length > 0 && rects.length <= 40) {
-      // Use line boxes from the browser; approximate text by splitting on whitespace in reading order
-      const words = [];
-      const re = /\S+/g; let m;
-      while ((m = re.exec(raw))) {
-        range.setStart(node, m.index); range.setEnd(node, m.index + m[0].length);
-        const rr = range.getBoundingClientRect();
-        if (rr.width >= 0.5 && rr.height >= 1) words.push({t: m[0], top: rr.top, left: rr.left, right: rr.right, bottom: rr.bottom});
-      }
       for (const r of rects) {
         if (r.width < 0.5 || r.height < 1) continue;
         const midY = r.top + r.height * 0.5;
-        const lineWords = words.filter(w => w.top < midY && w.bottom > midY && w.left < r.right + 2 && w.right > r.left - 2);
-        if (!lineWords.length) continue;
-        lineWords.sort((a, b) => a.left - b.left);
-        let s = lineWords.map(w => w.t).join(' ');
-        if (tt === 'uppercase') s = s.toUpperCase();
-        else if (tt === 'lowercase') s = s.toLowerCase();
-        else if (tt === 'capitalize') s = s.replace(/(^|\s)(\S)/g, (a, b, c) => b + c.toUpperCase());
-        // Pad width so older Android fonts (wider metrics) still fit without overflowing into neighbors
-        const pad = Math.max(2, fs * 0.18);
-        const bl = [r.left + sx, r.top + sy, (r.right - r.left) + pad, r.height];
-        if (!inter(bl, clip)) continue;
-        items.push(['t', R(bl[0]), R(bl[1]), Math.max(1, R(bl[2])), R(bl[3]), s, color, Math.round(fs * 10) / 10, flags]);
+        const lw = words.filter(w => !w.used && w.top < midY && w.bottom > midY &&
+                                     w.left < r.right + 2 && w.right > r.left - 2);
+        if (!lw.length) continue;
+        lw.sort((a, b) => a.left - b.left);
+        let right = -Infinity;
+        for (const w of lw) { w.used = true; if (w.right > right) right = w.right; }
+        emit(lw[0].left, r.top, right, r.height, lw);
       }
     } else {
-      // Fallback: classic word grouping (stricter vertical tolerance)
-      const re = /\S+/g; let m;
-      while ((m = re.exec(raw))) {
-        range.setStart(node, m.index); range.setEnd(node, m.index + m[0].length);
-        const rr = range.getBoundingClientRect();
-        if (rr.width < 0.5 || rr.height < 1) continue;
+      // Fallback: Woerter zu Zeilen gruppieren
+      const lines = [];
+      for (const w of words) {
         const L = lines.length ? lines[lines.length - 1] : null;
-        const tol = Math.min(rr.height, L ? (L.bottom - L.top) : rr.height) * 0.35;
-        if (L && Math.abs(rr.top - L.top) < tol && rr.left >= L.left - 1) {
-          L.words.push(m[0]); L.right = Math.max(L.right, rr.right); L.bottom = Math.max(L.bottom, rr.bottom);
+        const tol = Math.min(w.bottom - w.top, L ? (L.bottom - L.top) : (w.bottom - w.top)) * 0.35;
+        if (L && Math.abs(w.top - L.top) < tol && w.left >= L.left - 1) {
+          L.words.push(w); L.right = Math.max(L.right, w.right); L.bottom = Math.max(L.bottom, w.bottom);
         } else {
-          lines.push({top: rr.top, left: rr.left, right: rr.right, bottom: rr.bottom, words: [m[0]]});
+          lines.push({top: w.top, left: w.left, right: w.right, bottom: w.bottom, words: [w]});
         }
       }
-      for (const L of lines) {
-        const pad = Math.max(2, fs * 0.18);
-        const bl = [L.left + sx, L.top + sy, (L.right - L.left) + pad, L.bottom - L.top];
-        if (!inter(bl, clip)) continue;
-        let s = L.words.join(' ');
-        if (tt === 'uppercase') s = s.toUpperCase();
-        else if (tt === 'lowercase') s = s.toLowerCase();
-        else if (tt === 'capitalize') s = s.replace(/(^|\s)(\S)/g, (a, b, c) => b + c.toUpperCase());
-        items.push(['t', R(bl[0]), R(bl[1]), Math.max(1, R(bl[2])), R(bl[3]), s, color, Math.round(fs * 10) / 10, flags]);
-      }
+      for (const L of lines) emit(L.left, L.top, L.right, L.bottom - L.top, L.words);
     }
   };
 
@@ -234,21 +376,13 @@ EXTRACT_JS = r"""
     const ln = el.localName;
     const bg = col(cs.backgroundColor);
     const rad = parseFloat(cs.borderTopLeftRadius) || 0;
-    if (bg >>> 24) rect(bx, clip, bg, rad);
+    // Icons per mask-image (z.B. Wikipedia): Der Client kann nicht maskieren, die einfarbige
+    // Flaeche waere nur ein schwarzes Quadrat -> weglassen.
+    const mk = (cs.webkitMaskImage || cs.maskImage || '');
+    const masked = mk.includes('url(');
+    if ((bg >>> 24) && !masked) rect(bx, clip, bg, rad);
 
-    const bi = cs.backgroundImage;
-    if (bi && bi !== 'none' && bi.includes('url(')) {
-      const m = /url\(["']?(.*?)["']?\)/.exec(bi);
-      const sz = (cs.backgroundSize || '').toLowerCase();
-      const v = inter(bx, clip);
-      // Lower size threshold + accept more background-size values (common on product pages)
-      if (m && m[1] && v && bx[2] >= 16 && bx[3] >= 16) {
-        const mode = (sz.includes('cover') || sz === '100% 100%' || sz === '100%') ? 1 : 0;
-        const it = ['i', R(bx[0]), R(bx[1]), R(bx[2]), R(bx[3]), absUrl(m[1]), mode];
-        if (clip) it.push([R(v[0]), R(v[1]), R(v[2]), R(v[3])]);
-        items.push(it);
-      }
-    }
+    bgImages(cs, bx, clip);
 
     for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
       const bw = parseFloat(cs['border' + side + 'Width']);
@@ -277,9 +411,23 @@ EXTRACT_JS = r"""
       const v = inter(bx, clip);
       if (u && v && bx[2] >= 1 && bx[3] >= 1) {
         const fit = (cs.objectFit || '').toLowerCase();
-        const it = ['i', R(bx[0]), R(bx[1]), R(bx[2]), R(bx[3]), u, (fit === 'cover' || fit === 'none') ? 1 : 0];
-        if (clip) it.push([R(v[0]), R(v[1]), R(v[2]), R(v[3])]);
-        items.push(it);
+        const nw = el.naturalWidth, nh = el.naturalHeight;
+        const op = tokens(cs.objectPosition || '50% 50%');
+        const oxT = op[0] || '50%', oyT = op[1] || '50%';
+        const centered = oxT === '50%' && oyT === '50%';
+        let done = false;
+        if (nw > 0 && nh > 0 && (fit === 'contain' || fit === 'none' || fit === 'scale-down' ||
+                                  (fit === 'cover' && !centered))) {
+          let s = fit === 'none' ? 1
+                : fit === 'cover' ? Math.max(bx[2] / nw, bx[3] / nh)
+                : Math.min(bx[2] / nw, bx[3] / nh);
+          if (fit === 'scale-down') s = Math.min(1, s);
+          const tw = nw * s, th = nh * s;
+          const px = evalLen(oxT, bx[2] - tw) ?? 0, py = evalLen(oyT, bx[3] - th) ?? 0;
+          pushImg(u, bx[0] + px, bx[1] + py, tw, th, 0, v);
+          done = true;
+        }
+        if (!done) pushImg(u, bx[0], bx[1], bx[2], bx[3], (fit === 'cover' || fit === 'none') ? 1 : 0, v);
       }
     } else if (ln === 'input' || ln === 'textarea' || ln === 'select') {
       let kind = ln === 'input' ? (el.type || 'text') : ln;
@@ -309,12 +457,20 @@ EXTRACT_JS = r"""
     if (SKIP.has(ln)) return;
     const cs = getComputedStyle(el);
     if (cs.display === 'none' || parseFloat(cs.opacity) === 0) return;
+    // content-visibility:auto ueberspringt Layout fuer Offscreen-Inhalt -> Platzhaltergroesse
+    // statt echter Hoehe, Inhalt ueberlappt. Echtes Layout erzwingen.
+    if (cs.contentVisibility === 'auto') el.style.setProperty('content-visibility', 'visible', 'important');
     const bx = box(el);
     // fixed-Overlays (Cookie-Banner etc.) absichtlich mitnehmen
     const vis = cs.visibility === 'visible';
     const hasBox = bx[2] >= 1 && bx[3] >= 1;
     if (vis && hasBox) decorate(el, cs, bx, clip);
     if (ln === 'input' || ln === 'textarea' || ln === 'select' || ln === 'img') return;
+    // Nicht gerenderter Inhalt (zugeklappte Wikipedia-Abschnitte = hidden=until-found bzw.
+    // content-visibility:hidden): Chromium liefert dort trotzdem (uebereinanderliegende)
+    // Boxen -> komplett ueberspringen. Geschlossenes <details>: nur das <summary> zeigen.
+    if (cs.contentVisibility === 'hidden') return;
+    const onlySummary = ln === 'details' && !el.open;
     let cclip = clip;
     if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') {
       const v = inter(bx, clip);
@@ -332,12 +488,29 @@ EXTRACT_JS = r"""
     }
     const root = el.shadowRoot || el;
     for (let n = root.firstChild; n; n = n.nextSibling) {
-      if (n.nodeType === 1) walk(n, cclip);
-      else if (n.nodeType === 3 && vis) text(n, cs, cclip);
+      if (n.nodeType === 1) {
+        if (onlySummary && n.localName !== 'summary') continue;
+        walk(n, cclip);
+      } else if (n.nodeType === 3 && vis && !onlySummary) text(n, cs, cclip);
     }
   };
 
-  walk(document.body, null);
+  const runWalk = () => { items = []; walk(document.body, null); };
+  runWalk();
+  // Sprites/Hintergrundbilder, deren Groesse noch unbekannt war: kurz nachladen, dann neu extrahieren
+  if (pendingImgs.size) {
+    await Promise.all(Array.from(pendingImgs.entries()).map(([u, im]) => new Promise(res => {
+      const done = () => {
+        nat.set(u, im.naturalWidth > 0 && im.naturalHeight > 0 ? [im.naturalWidth, im.naturalHeight] : null);
+        res();
+      };
+      if (im.complete) return done();
+      im.onload = done; im.onerror = done;
+      setTimeout(() => { if (!nat.has(u)) nat.set(u, null); res(); }, 2500);
+    })));
+    pendingImgs.clear();
+    runWalk();
+  }
 
   const de = document.documentElement;
   let pbg = col(getComputedStyle(de).backgroundColor);
@@ -367,6 +540,26 @@ EXTRACT_JS = r"""
   }
   return {w: Math.max(de.scrollWidth, VW), h: pageH, title: document.title,
           bg: pbg, items: items, focus: focus};
+}
+"""
+
+
+# Wikimedia-Seiten (mobil) liefern alle Abschnitte zugeklappt (hidden=until-found).
+# Wir klappen sie einmal pro Dokument auf; danach laesst sich per Tippen wieder zuklappen.
+EXPAND_JS = r"""
+() => {
+  if (window.__dtExpanded) return 0;
+  if (!/(^|\.)(wikipedia|wikimedia|wiktionary|wikibooks|wikiquote|wikisource|wikivoyage|wikinews|wikiversity|mediawiki)\.org$/i
+        .test(location.hostname || '')) return 0;
+  window.__dtExpanded = 1;
+  let n = 0;
+  // 1) wie ein Nutzer: Ueberschrift antippen (aktualisiert auch Pfeil-Icon und Zustand der Seite)
+  document.querySelectorAll('.collapsible-heading:not(.open-block)').forEach(h => {
+    try { h.click(); n++; } catch (e) {}
+  });
+  // 2) Rest (z.B. falls die Seiten-JS noch nicht bereit war): Attribut direkt entfernen
+  document.querySelectorAll('[hidden="until-found"]').forEach(e => { e.removeAttribute('hidden'); n++; });
+  return n;
 }
 """
 
@@ -640,6 +833,11 @@ async def snapshot(s, lazy=False, error=None, cert=None):
     page, t0, data = s.page, time.time(), None
     for attempt in range(2):
         try:
+            try:
+                if await page.evaluate(EXPAND_JS):
+                    await asyncio.sleep(0.3)  # Layout nach dem Aufklappen setzen lassen
+            except Exception as e:
+                log.warning("Aufklappen fehlgeschlagen: %s", short(e))
             if lazy:
                 await lazy_scroll(page)
             else:
