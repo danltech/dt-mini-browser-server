@@ -46,7 +46,9 @@ Display-List-Items (Koordinaten in CSS-px, Seitenkoordinaten; Farben = ARGB als 
 Reihenfolge = Zeichenreihenfolge (spaetere Items liegen oben).
 
 Umgebungsvariablen: MINI_PORT, MINI_HOST, MINI_CHROME (Pfad zu chromium), MINI_LOCALE,
-                    MINI_SHOT=0 (kein Referenz-Screenshot), MINI_ALLOW_PRIVATE=1 (interne Adressen erlauben)
+                    MINI_FALLBACK_LANG (en|de, default en), MINI_SHOT=0 (kein Referenz-Screenshot),
+                    MINI_ALLOW_PRIVATE=1 (interne Adressen erlauben)
+Client kann ?lang=de|en senden; sonst MINI_FALLBACK_LANG.
 """
 
 import asyncio
@@ -67,6 +69,8 @@ from urllib.parse import quote, unquote_to_bytes, urlparse
 from aiohttp import web
 from PIL import Image
 from playwright.async_api import async_playwright
+
+from i18n import t, normalize_lang, FALLBACK_LANG
 
 HOST = os.environ.get("MINI_HOST", "0.0.0.0")
 PORT = int(os.environ.get("MINI_PORT", "8080"))
@@ -634,9 +638,10 @@ def short(e):
 # --------------------------------------------------------------------------- Sitzungen
 
 class Session:
-    def __init__(self, sid, ctx, w, h, dpr, cid=None):
+    def __init__(self, sid, ctx, w, h, dpr, cid=None, lang=None):
         self.sid, self.ctx, self.w, self.h, self.dpr = sid, ctx, w, h, dpr
         self.cid = cid or ""
+        self.lang = normalize_lang(lang)
         self.page = None
         self.lock = asyncio.Lock()
         self.last = time.time()
@@ -710,7 +715,7 @@ def attach(s, page):
     page.on("download", lambda d: asyncio.ensure_future(on_download(d)))
 
 
-async def new_session(app, sid, w, h, dpr, cid=None, android_ver=None, model=None):
+async def new_session(app, sid, w, h, dpr, cid=None, android_ver=None, model=None, lang=None):
     ua = build_ua(android_ver or "13", model or "Pixel 7") if (android_ver or model) else UA
     kw = dict(viewport={"width": w, "height": h}, device_scale_factor=1,
               user_agent=ua, locale=LOCALE)
@@ -737,13 +742,13 @@ async def new_session(app, sid, w, h, dpr, cid=None, android_ver=None, model=Non
             pass
 
     await ctx.route("**/*", guard)
-    s = Session(sid, ctx, w, h, dpr, cid=cid)
+    s = Session(sid, ctx, w, h, dpr, cid=cid, lang=lang)
     attach(s, await ctx.new_page())
     ctx.on("page", lambda p: attach(s, p))  # Popups uebernehmen
     return s
 
 
-async def get_session(app, sid, w, h, dpr, cid=None, android_ver=None, model=None):
+async def get_session(app, sid, w, h, dpr, cid=None, android_ver=None, model=None, lang=None):
     ss = app["sessions"]
     s = ss.get(sid) if sid else None
     if s and (s.w != w or (cid and s.cid and s.cid != cid)):
@@ -757,11 +762,13 @@ async def get_session(app, sid, w, h, dpr, cid=None, android_ver=None, model=Non
             await old.close()
         sid = sid or uuid.uuid4().hex[:12]
         s = await new_session(app, sid, w, h, dpr, cid=cid,
-                              android_ver=android_ver, model=model)
+                              android_ver=android_ver, model=model, lang=lang)
         ss[sid] = s
     s.dpr, s.h, s.last = dpr, h, time.time()
     if cid and not s.cid:
         s.cid = cid
+    if lang:
+        s.lang = normalize_lang(lang)
     return s
 
 
@@ -769,6 +776,9 @@ def find_session(req):
     s = req.app["sessions"].get(req.query.get("sid"))
     if s:
         s.last = time.time()
+        lang = (req.query.get("lang") or "").strip()
+        if lang:
+            s.lang = normalize_lang(lang)
     return s
 
 
@@ -821,10 +831,13 @@ async def lazy_scroll(page):
         pass
 
 
-def error_state(s, msg):
-    lines = textwrap.wrap("Fehler: " + msg, width=max(10, (s.w - 20) // 9)) or ["Fehler"]
+def error_state(s, msg, lang=None):
+    lang = normalize_lang(lang or getattr(s, "lang", None))
+    prefix = t("error_prefix", lang)
+    title = t("error_title", lang)
+    lines = textwrap.wrap(prefix + msg, width=max(10, (s.w - 20) // 9)) or [title]
     items = [["t", 10, 10 + i * 24, s.w - 20, 22, ln, 0xFFCC0000, 16, 0] for i, ln in enumerate(lines)]
-    return {"v": 1, "sid": s.sid, "url": "", "title": "Fehler", "w": s.w,
+    return {"v": 1, "sid": s.sid, "url": "", "title": title, "w": s.w,
             "h": 20 + 24 * len(lines), "bg": 0xFFFFFFFF, "items": items, "focus": None, "err": msg}
 
 
@@ -849,7 +862,7 @@ async def snapshot(s, lazy=False, error=None, cert=None):
             log.warning("Extraktion fehlgeschlagen (%s), Versuch %d", short(e), attempt + 1)
             await settle(page)
     if data is None:
-        return error_state(s, "Seite konnte nicht ausgelesen werden")
+        return error_state(s, t("page_read_failed", getattr(s, "lang", None)))
 
     for it in data["items"]:
         if it[0] == "i":
@@ -977,13 +990,14 @@ async def h_load(req):
     cid = (q.get("cid") or "").strip() or None
     android_ver = (q.get("av") or "").strip() or None
     model = (q.get("model") or "").strip() or None
+    lang = (q.get("lang") or "").strip() or None
     s = await get_session(req.app, q.get("sid"), w, h, dpr, cid=cid,
-                          android_ver=android_ver, model=model)
+                          android_ver=android_ver, model=model, lang=lang)
     async with s.lock:
         err = None
         cert = None
         if not await url_allowed(url) and url != "about:blank":
-            err = "Adresse nicht erlaubt (interne Adresse)"
+            err = t("address_not_allowed", getattr(s, "lang", None))
         else:
             try:
                 # "load" wartet auf window.load; Fallback auf domcontentloaded bei Timeout
@@ -1037,7 +1051,7 @@ def is_external_scheme(url):
         return False
     u = url.strip().lower()
     for p in ("market:", "intent:", "tel:", "mailto:", "sms:", "geo:",
-              "whatsapp:", "tg:", "vnd.", "play.google.com/store"):
+              "whatsapp:", "tg:", "vnd.", "play.google.com/store", "fdroid."):
         if u.startswith(p) or p in u[:64]:
             return True
     return False
@@ -1237,11 +1251,11 @@ async def on_start(app):
         # z.B. "130.0.6723.58" -> für UA oft major.0.0.0 üblich, wir nehmen die echte
         CHROME_VER = ver.split()[0] if ver else CHROME_VER
         UA = build_ua()
-        log.info("Chromium gestartet, Version %s", CHROME_VER)
+        log.info("Started Chromium, Version %s", CHROME_VER)
         log.info("DTMiniBrowserServer, Version %s", DTMB_VER)
     except Exception as e:
-        log.warning("Chrome-Version konnte nicht gelesen werden: %s", short(e))
-        log.info("Chromium gestartet")
+        log.warning("Chrome-Version could not be read: %s", short(e))
+        log.info("Started Chromium")
     app["reaper"] = asyncio.create_task(reaper(app))
 
 
