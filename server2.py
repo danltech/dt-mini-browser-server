@@ -89,9 +89,9 @@ DOWNLOADS_DIR.mkdir(exist_ok=True)
 MAX_DOWNLOAD_MB = 80
 
 # Fallback, wird beim Start durch echte Chromium-Version ersetzt
-CHROME_VER = "124.0.0.0"
-UA_PRODUCT = "DTMiniBrowser-Alpha/0.9"
-DTMB_VER = "0.9-r3"
+CHROME_VER = "156.0.0.0"
+UA_PRODUCT = "DTMiniBrowser-Alpha/0.9-r4"
+DTMB_VER = "0.9-r4"
 
 def build_ua(android_ver="13", model="Pixel 7"):
     """Baut einen Mobile-Chrome-UA mit echter Chrome-Version + Client-Gerätedaten."""

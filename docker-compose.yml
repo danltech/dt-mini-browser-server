@@ -11,7 +11,7 @@ services:
       # MINI_PORT: "8080"
       # MINI_SHOT: "0"
       # MINI_ALLOW_PRIVATE: "1"     # ⚠️ disables the internal-network protection
-      MINI_FALLBACK_LANG: EN
+      MINI_FALLBACK_LANG: "en"
     volumes:
       - mini-data:/data             # cookies/sessions, downloads, debug output
     shm_size: "256mb"
