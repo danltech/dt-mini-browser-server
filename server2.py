@@ -101,6 +101,10 @@ MINI_FILES = Path(os.environ.get("MINI_FILES", "minifiles"))
 MINI_TOKEN = os.environ.get("MINI_TOKEN", "").strip()
 MINI_SSL = os.environ.get("MINI_SSL", "0") == "1"
 MINI_SETUP = os.environ.get("MINI_SETUP", "1") != "0"
+# Oeffentliche Adresse fuer QR/Setup (Host-LAN-IP oder Domain). In Docker sonst nur Container-IP!
+# Beispiel: MINI_PUBLIC_HOST=192.168.0.52   oder   MINI_PUBLIC_URL=https://192.168.0.52:8051
+MINI_PUBLIC_HOST = os.environ.get("MINI_PUBLIC_HOST", "").strip()
+MINI_PUBLIC_URL = os.environ.get("MINI_PUBLIC_URL", "").strip().rstrip("/")
 SSL_CERT_FILE = MINI_FILES / "server.crt"
 SSL_KEY_FILE = MINI_FILES / "server.key"
 TOKEN_FILE = MINI_FILES / "token.txt"
@@ -1327,6 +1331,54 @@ def _gen_token(n=32):
     return secrets.token_urlsafe(n)
 
 
+def _collect_advertise_hosts():
+    """Hosts/IPs die ins Zertifikat und in die Setup-URL gehoeren."""
+    hosts = []
+    if MINI_PUBLIC_HOST:
+        hosts.append(MINI_PUBLIC_HOST)
+    if MINI_PUBLIC_URL:
+        try:
+            u = urlparse(MINI_PUBLIC_URL if "://" in MINI_PUBLIC_URL else "https://" + MINI_PUBLIC_URL)
+            if u.hostname:
+                hosts.append(u.hostname)
+        except Exception:
+            pass
+    try:
+        ip = lan_ip()
+        if ip:
+            hosts.append(ip)
+    except Exception:
+        pass
+    hosts.extend(["localhost", "127.0.0.1"])
+    # unique, order preserved
+    out, seen = [], set()
+    for h in hosts:
+        h = (h or "").strip().strip("[]")
+        if not h or h in seen:
+            continue
+        seen.add(h)
+        out.append(h)
+    return out
+
+
+def _is_probably_docker_bridge(ip: str) -> bool:
+    try:
+        a = ipaddress.ip_address(ip)
+        # Docker default bridges often 172.16/12; still could be real LAN – only warn
+        return a.is_private and ip.startswith("172.")
+    except Exception:
+        return False
+
+
+def public_base_url(use_ssl: bool) -> str:
+    """URL die Handys erreichen koennen (nicht die Docker-interne IP)."""
+    if MINI_PUBLIC_URL:
+        return MINI_PUBLIC_URL
+    scheme = "https" if use_ssl else "http"
+    host = MINI_PUBLIC_HOST or lan_ip()
+    return f"{scheme}://{host}:{PORT}"
+
+
 def _gen_self_signed_cert(cert_path: Path, key_path: Path, cn: str = "dt-mini-browser"):
     """Erzeugt selbstsigniertes Zertifikat (cryptography oder openssl)."""
     try:
@@ -1341,15 +1393,15 @@ def _gen_self_signed_cert(cert_path: Path, key_path: Path, cn: str = "dt-mini-br
             x509.NameAttribute(NameOID.COMMON_NAME, cn),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "DT Mini Browser"),
         ])
-        # SAN: localhost + LAN-IP
-        sans = [x509.DNSName("localhost"), x509.DNSName(cn)]
-        try:
-            ip = lan_ip()
-            if ip and ip != "127.0.0.1":
-                sans.append(x509.IPAddress(ipaddress.ip_address(ip)))
-        except Exception:
-            pass
-        sans.append(x509.IPAddress(ipaddress.ip_address("127.0.0.1")))
+        # SAN: oeffentliche Hosts + localhost
+        sans = []
+        for h in _collect_advertise_hosts():
+            try:
+                sans.append(x509.IPAddress(ipaddress.ip_address(h)))
+            except ValueError:
+                sans.append(x509.DNSName(h))
+        if not sans:
+            sans = [x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
         cert = (
             x509.CertificateBuilder()
             .subject_name(subject)
@@ -1447,8 +1499,19 @@ def prepare_security():
         fp = _cert_fingerprint_sha256(SSL_CERT_FILE)
         (MINI_FILES / "fingerprint.txt").write_text(fp + "\n", encoding="utf-8")
 
-    scheme = "https" if use_ssl else "http"
-    base = f"{scheme}://{lan_ip()}:{PORT}"
+    base = public_base_url(use_ssl)
+    # Warnung: Docker-Container-IP ist vom Handy nicht erreichbar
+    try:
+        host_only = urlparse(base).hostname or ""
+        if not MINI_PUBLIC_HOST and not MINI_PUBLIC_URL and _is_probably_docker_bridge(host_only):
+            log.warning(
+                "Setup-URL nutzt vermutlich Docker-IP %s – vom Handy nicht erreichbar. "
+                "Setze MINI_PUBLIC_HOST auf deine LAN-IP (z.B. 192.168.0.52) und "
+                "loesche minifiles/server.crt + server.key, dann neu starten.",
+                host_only,
+            )
+    except Exception:
+        pass
     # Kompaktes Setup-Payload fuer QR / Zwischenablage (App parst dtmini:1|…)
     parts = ["dtmini:1", base]
     if token:
@@ -1586,9 +1649,11 @@ def main():
         web.get("/setup", h_setup),
         web.get("/qr", h_qr),
     ])
-    scheme = "https" if ssl_ctx else "http"
-    log.info("Echtes Geraet: %s://%s:%d   |   Android-Emulator: %s://10.0.2.2:%d",
-             scheme, lan_ip(), PORT, scheme, PORT)
+    base = public_base_url(ssl_ctx is not None)
+    log.info("Oeffentliche URL (QR/App): %s", base)
+    log.info("Container/lokal: %s://%s:%d   |   Emulator: %s://10.0.2.2:%d",
+             "https" if ssl_ctx else "http", lan_ip(), PORT,
+             "https" if ssl_ctx else "http", PORT)
     if token:
         log.info("Token-Auth aktiv (Header X-Mini-Token oder ?token=)")
     if ssl_ctx:

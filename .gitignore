@@ -6,3 +6,7 @@ states/
 downloads/
 debug/
 server.py
+minifiles/
+*.cer
+*.pem
+*.key
