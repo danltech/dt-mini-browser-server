@@ -18,7 +18,7 @@ services:
       # MINI_TOKEN: "your-secret-token"  # otherwise, one will be generated and written to minifiles/token.txt
     volumes:
       - mini-data:/data             # cookies/sessions, downloads, debug output
-      - ./minifiles:/data/minifiles # Zertifikat, Token, QR-Codes (qr-setup.png, setup.txt)
+      - ./minifiles:/data/minifiles # Certificate, token, QR codes (qr-setup.png, setup.txt)
     shm_size: "256mb"
     mem_limit: 2g
     pids_limit: 512

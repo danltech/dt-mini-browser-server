@@ -1271,8 +1271,55 @@ async def h_download(req):
 
 # --------------------------------------------------------------------------- Sicherheit: Token, TLS, QR-Setup
 
+def _dir_writable(d: Path) -> bool:
+    """True wenn Verzeichnis existiert/angelegt werden kann und beschreibbar ist."""
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        probe = d / ".write_test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def _ensure_minifiles():
-    MINI_FILES.mkdir(parents=True, exist_ok=True)
+    """Waehlt ein beschreibbares minifiles-Verzeichnis (Bind-Mount oft root-owned)."""
+    global MINI_FILES, SSL_CERT_FILE, SSL_KEY_FILE, TOKEN_FILE, SETUP_FILE
+    preferred = Path(os.environ.get("MINI_FILES", "minifiles"))
+    # /tmp liegt im Container und ist fuer User mini immer schreibbar
+    candidates = [preferred, Path("/tmp/minifiles"), Path("minifiles_local")]
+    # Duplikate entfernen, Reihenfolge behalten
+    seen = set()
+    ordered = []
+    for c in candidates:
+        key = str(c.resolve()) if c.exists() else str(c)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(c)
+    chosen = None
+    for d in ordered:
+        if _dir_writable(d):
+            chosen = d
+            break
+    if chosen is None:
+        raise RuntimeError(
+            "Kein beschreibbares minifiles-Verzeichnis. "
+            "Auf dem Host z.B.: mkdir -p minifiles && sudo chown -R 10001:10001 minifiles"
+        )
+    if chosen != preferred:
+        log.warning(
+            "minifiles nicht beschreibbar (%s) – nutze %s. "
+            "QR/Token liegen sonst nicht im Host-Mount. Fix: "
+            "mkdir -p minifiles && sudo chown -R 10001:10001 minifiles",
+            preferred, chosen,
+        )
+    MINI_FILES = chosen
+    SSL_CERT_FILE = MINI_FILES / "server.crt"
+    SSL_KEY_FILE = MINI_FILES / "server.key"
+    TOKEN_FILE = MINI_FILES / "token.txt"
+    SETUP_FILE = MINI_FILES / "setup.txt"
 
 
 def _gen_token(n=32):

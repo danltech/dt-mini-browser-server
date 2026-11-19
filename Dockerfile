@@ -24,8 +24,8 @@ RUN apt-get update \
 
 # Non-root user; /data holds states/ downloads/ debug/ (the server writes relative to its cwd)
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin mini \
- && mkdir -p /app /data \
- && chown mini:mini /data
+ && mkdir -p /app /data/minifiles \
+ && chown -R mini:mini /data
 
 COPY server2.py /app/server.py
 COPY i18n.py /app/i18n.py
