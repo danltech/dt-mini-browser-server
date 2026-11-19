@@ -1534,8 +1534,24 @@ def prepare_security():
     ssl_ctx = None
     if use_ssl:
         import ssl
+        # Android 4.1 (API 16) kann oft nur TLS 1.0/1.1 – OpenSSL 3 default ist TLS 1.2+.
         ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        try:
+            ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1
+        except Exception:
+            pass
+        try:
+            # SECLEVEL=0: alte Cipher (AES128-SHA etc.) fuer Android 4.x freigeben
+            ssl_ctx.set_ciphers("DEFAULT:@SECLEVEL=0")
+        except Exception:
+            try:
+                ssl_ctx.set_ciphers(
+                    "ECDHE+AESGCM:ECDHE+CHACHA20:ECDHE+AES:RSA+AESGCM:RSA+AES:!aNULL:!eNULL:!MD5:!DSS"
+                )
+            except Exception:
+                pass
         ssl_ctx.load_cert_chain(str(SSL_CERT_FILE), str(SSL_KEY_FILE))
+        log.info("TLS: Minimum TLSv1 (Kompatibilitaet Android 4.1 / TLS 1.0+1.1)")
 
     log.info("Setup-String (QR/App): %s", setup_uri)
     log.info("Dateien in %s: setup.txt, qr-setup.png%s%s",
