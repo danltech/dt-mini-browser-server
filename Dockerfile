@@ -20,7 +20,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       chromium fonts-liberation fonts-dejavu-core fonts-noto-color-emoji \
  && rm -rf /var/lib/apt/lists/* \
- && pip install aiohttp pillow "playwright${PLAYWRIGHT_VERSION:+==$PLAYWRIGHT_VERSION}"
+ && pip install aiohttp pillow cryptography "qrcode[pil]" "playwright${PLAYWRIGHT_VERSION:+==$PLAYWRIGHT_VERSION}"
 
 # Non-root user; /data holds states/ downloads/ debug/ (the server writes relative to its cwd)
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin mini \

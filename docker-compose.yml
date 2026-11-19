@@ -12,8 +12,13 @@ services:
       # MINI_SHOT: "0"
       # MINI_ALLOW_PRIVATE: "1"     # ⚠️ disables the internal-network protection
       MINI_FALLBACK_LANG: "en"
+      # Security (token + optional TLS; files are stored in ./minifiles)
+      MINI_SETUP: "1"               # Automatically generate token/certificate/QR if missing
+      MINI_SSL: "1"                 # HTTPS with a self-signed certificate
+      # MINI_TOKEN: "your-secret-token"  # otherwise, one will be generated and written to minifiles/token.txt
     volumes:
       - mini-data:/data             # cookies/sessions, downloads, debug output
+      - ./minifiles:/data/minifiles # Zertifikat, Token, QR-Codes (qr-setup.png, setup.txt)
     shm_size: "256mb"
     mem_limit: 2g
     pids_limit: 512
@@ -24,3 +29,4 @@ services:
 
 volumes:
   mini-data:
+  

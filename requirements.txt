@@ -1,3 +1,5 @@
 aiohttp
 playwright
 pillow
+cryptography
+qrcode[pil]

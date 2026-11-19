@@ -38,16 +38,20 @@ Seitenzustand:
 
 Display-List-Items (Koordinaten in CSS-px, Seitenkoordinaten; Farben = ARGB als unsigned int):
   ["r", x,y,w,h, argb, radius]                         gefuelltes Rechteck (auch Rahmenlinien)
-  ["t", x,y,w,h, text, argb, fontPx, flags]            eine Textzeile; flags: 1 fett, 2 kursiv,
-                                                        4 unterstrichen, 8 durchgestrichen, 16 monospace
+  ["t", x,y,w,h, text, argb, fontPx, flags, blockId]   eine Textzeile; flags: 1 fett, 2 kursiv,
+                                                        4 unterstrichen, 8 durchgestrichen, 16 monospace;
+                                                        blockId: gleiche Zahl = gleicher Absatz/Block
+                                                        (damit der Client beim Kopieren richtig umbricht)
   ["i", x,y,w,h, imgId, mode(0 strecken,1 cover) [,[cx,cy,cw,ch]]]   Bild (optional mit Clip-Rechteck)
-  ["a", x,y,w,h, href]                                 Link-Bereich
+  ["a", x,y,w,h, href, linkText]                       Link-Bereich (linkText = sichtbarer Linktext)
   ["f", x,y,w,h, kind, text, checked, isPlaceholder, argb, fontPx]   Formularfeld
 Reihenfolge = Zeichenreihenfolge (spaetere Items liegen oben).
 
 Umgebungsvariablen: MINI_PORT, MINI_HOST, MINI_CHROME (Pfad zu chromium), MINI_LOCALE,
                     MINI_FALLBACK_LANG (en|de, default en), MINI_SHOT=0 (kein Referenz-Screenshot),
-                    MINI_ALLOW_PRIVATE=1 (interne Adressen erlauben)
+                    MINI_ALLOW_PRIVATE=1 (interne Adressen erlauben),
+                    MINI_TOKEN (Auth-Token), MINI_SSL=1 (HTTPS), MINI_SETUP=1 (Zertifikat/Token/QR in minifiles/),
+                    MINI_FILES (Ordner fuer Zertifikat/QR, default minifiles)
 Client kann ?lang=de|en senden; sonst MINI_FALLBACK_LANG.
 """
 
@@ -77,7 +81,8 @@ PORT = int(os.environ.get("MINI_PORT", "8080"))
 CHROME = os.environ.get("MINI_CHROME", "")
 LOCALE = os.environ.get("MINI_LOCALE", "en-US")
 SHOT = os.environ.get("MINI_SHOT", "1") != "0"
-ALLOW_PRIVATE = os.environ.get("MINI_ALLOW_PRIVATE") == "0"
+# MINI_ALLOW_PRIVATE=1 erlaubt private/interne Zieladressen (Standard: blockiert)
+ALLOW_PRIVATE = os.environ.get("MINI_ALLOW_PRIVATE") == "1"
 MAX_SESSIONS = 4
 IDLE_SECONDS = 600
 DEBUG_DIR = Path("debug")
@@ -87,6 +92,19 @@ STATES_DIR.mkdir(exist_ok=True)
 DOWNLOADS_DIR = Path("downloads")
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 MAX_DOWNLOAD_MB = 80
+
+# Sicherheit: Token + optionales TLS (Zertifikat in minifiles/)
+# MINI_TOKEN: wenn gesetzt, muss Client Header X-Mini-Token oder ?token= mitschicken
+# MINI_SSL=1: HTTPS mit server.crt/server.key (werden ggf. auto-generiert)
+# MINI_SETUP=1 (default): Token/Zertifikat/QR in minifiles/ anlegen falls fehlend
+MINI_FILES = Path(os.environ.get("MINI_FILES", "minifiles"))
+MINI_TOKEN = os.environ.get("MINI_TOKEN", "").strip()
+MINI_SSL = os.environ.get("MINI_SSL", "0") == "1"
+MINI_SETUP = os.environ.get("MINI_SETUP", "1") != "0"
+SSL_CERT_FILE = MINI_FILES / "server.crt"
+SSL_KEY_FILE = MINI_FILES / "server.key"
+TOKEN_FILE = MINI_FILES / "token.txt"
+SETUP_FILE = MINI_FILES / "setup.txt"
 
 # Fallback, wird beim Start durch echte Chromium-Version ersetzt
 CHROME_VER = "156.0.0.0"
@@ -131,6 +149,9 @@ async () => {
   const expandScrollOverflow = !/amazon\./i.test(location.hostname || '');
   const SKIP = new Set(['script','style','noscript','template','iframe','svg','video','audio',
                         'canvas','object','embed','head','link','meta','title']);
+
+  // Block-ID: Text im selben Block-Element (Absatz, Listenpunkt, ...) bekommt dieselbe Nummer.
+  let blk = 0, blkN = 0;
 
   const cache = new Map();
   const cv = document.createElement('canvas'); cv.width = cv.height = 1;
@@ -347,7 +368,7 @@ async () => {
       const bl = [left + sx, top + sy, right - left, height];
       if (!inter(bl, clip)) return;
       const s = fixCase(lw.map(w => w.t).join(' '));
-      items.push(['t', R(bl[0]), R(bl[1]), Math.max(1, R(bl[2])), R(bl[3]), s, color, Math.round(fs * 10) / 10, flags]);
+      items.push(['t', R(bl[0]), R(bl[1]), Math.max(1, R(bl[2])), R(bl[3]), s, color, Math.round(fs * 10) / 10, flags, blk]);
     };
     if (rects.length > 0 && rects.length <= 40) {
       for (const r of rects) {
@@ -450,9 +471,14 @@ async () => {
       items.push(['f', R(bx[0]), R(bx[1]), R(bx[2]), R(bx[3]), kind, txt, chk, ph,
                   col(cs.color), parseFloat(cs.fontSize) || 16]);
     } else if (ln === 'a' && el.href && typeof el.href === 'string' && !el.href.startsWith('javascript')) {
+      let lt = '';
+      try {
+        lt = (el.innerText || el.textContent || el.getAttribute('aria-label') || el.title || '')
+               .replace(/\s+/g, ' ').trim().slice(0, 300);
+      } catch (e) {}
       for (const r of el.getClientRects()) {
         if (r.width >= 4 && r.height >= 4)
-          items.push(['a', R(r.x + sx), R(r.y + sy), R(r.width), R(r.height), el.href]);
+          items.push(['a', R(r.x + sx), R(r.y + sy), R(r.width), R(r.height), el.href, lt]);
       }
     }
   };
@@ -491,6 +517,8 @@ async () => {
         cclip = v;
       }
     }
+    const pb = blk;
+    if (cs.display !== 'inline') blk = ++blkN;
     const root = el.shadowRoot || el;
     for (let n = root.firstChild; n; n = n.nextSibling) {
       if (n.nodeType === 1) {
@@ -498,9 +526,10 @@ async () => {
         walk(n, cclip);
       } else if (n.nodeType === 3 && vis && !onlySummary) text(n, cs, cclip);
     }
+    blk = pb;
   };
 
-  const runWalk = () => { items = []; walk(document.body, null); };
+  const runWalk = () => { items = []; blk = 0; blkN = 0; walk(document.body, null); };
   runWalk();
   // Sprites/Hintergrundbilder, deren Groesse noch unbekannt war: kurz nachladen, dann neu extrahieren
   if (pendingImgs.size) {
@@ -1134,7 +1163,11 @@ async def h_type(req):
         try:
             await page.keyboard.press("Control+A")
             if text:
-                await page.keyboard.type(text)
+                if len(text) > 40 or "\n" in text or "\t" in text:
+                    # eingefuegter/langer Text: in einem Rutsch (schnell, kein Enter bei Zeilenumbruch)
+                    await page.keyboard.insert_text(text)
+                else:
+                    await page.keyboard.type(text)
             else:
                 await page.keyboard.press("Backspace")
             if enter:
@@ -1235,6 +1268,211 @@ async def h_download(req):
     return web.Response(body=data, headers=headers)
 
 
+
+# --------------------------------------------------------------------------- Sicherheit: Token, TLS, QR-Setup
+
+def _ensure_minifiles():
+    MINI_FILES.mkdir(parents=True, exist_ok=True)
+
+
+def _gen_token(n=32):
+    import secrets
+    return secrets.token_urlsafe(n)
+
+
+def _gen_self_signed_cert(cert_path: Path, key_path: Path, cn: str = "dt-mini-browser"):
+    """Erzeugt selbstsigniertes Zertifikat (cryptography oder openssl)."""
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        import datetime as _dt
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = issuer = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, cn),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "DT Mini Browser"),
+        ])
+        # SAN: localhost + LAN-IP
+        sans = [x509.DNSName("localhost"), x509.DNSName(cn)]
+        try:
+            ip = lan_ip()
+            if ip and ip != "127.0.0.1":
+                sans.append(x509.IPAddress(ipaddress.ip_address(ip)))
+        except Exception:
+            pass
+        sans.append(x509.IPAddress(ipaddress.ip_address("127.0.0.1")))
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(_dt.datetime.utcnow() - _dt.timedelta(minutes=1))
+            .not_valid_after(_dt.datetime.utcnow() + _dt.timedelta(days=825))
+            .add_extension(x509.SubjectAlternativeName(sans), critical=False)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .sign(key, hashes.SHA256())
+        )
+        key_path.write_bytes(
+            key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+        )
+        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        return
+    except ImportError:
+        pass
+    # Fallback: openssl CLI
+    import subprocess
+    cmd = [
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", str(key_path), "-out", str(cert_path),
+        "-days", "825", "-subj", f"/CN={cn}/O=DT Mini Browser",
+    ]
+    subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _cert_fingerprint_sha256(cert_path: Path) -> str:
+    """SHA-256 Fingerprint des Zertifikats (Hex, klein)."""
+    pem = cert_path.read_bytes()
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        cert = x509.load_pem_x509_certificate(pem)
+        return cert.fingerprint(hashes.SHA256()).hex()
+    except Exception:
+        pass
+    # openssl fallback
+    import subprocess, hashlib
+    try:
+        der = subprocess.check_output(
+            ["openssl", "x509", "-in", str(cert_path), "-outform", "DER"],
+            stderr=subprocess.DEVNULL,
+        )
+        return hashlib.sha256(der).hexdigest()
+    except Exception:
+        # roher PEM-Hash (nicht ideal, aber besser als nichts)
+        return hashlib.sha256(pem).hexdigest()
+
+
+def _write_qr_png(path: Path, data: str, box=6):
+    """QR-Code als PNG schreiben (qrcode+PIL optional)."""
+    try:
+        import qrcode
+        img = qrcode.make(data, border=2)
+        img.save(path)
+        return True
+    except Exception as e:
+        log.warning("QR konnte nicht erzeugt werden (%s). setup.txt enthaelt den Text.", e)
+        return False
+
+
+def prepare_security():
+    """Token/Zertifikat anlegen, QR und setup.txt schreiben. Gibt (token, ssl_ctx_or_None, setup_uri) zurueck."""
+    global MINI_TOKEN
+    _ensure_minifiles()
+    token = MINI_TOKEN
+    if MINI_SETUP and not token and TOKEN_FILE.is_file():
+        token = TOKEN_FILE.read_text(encoding="utf-8").strip()
+        MINI_TOKEN = token
+    if MINI_SETUP and not token:
+        token = _gen_token()
+        MINI_TOKEN = token
+        TOKEN_FILE.write_text(token + "\n", encoding="utf-8")
+        log.info("Auth-Token erzeugt und in %s gespeichert", TOKEN_FILE)
+    elif token and MINI_SETUP:
+        TOKEN_FILE.write_text(token + "\n", encoding="utf-8")
+
+    use_ssl = MINI_SSL or (SSL_CERT_FILE.is_file() and SSL_KEY_FILE.is_file())
+    if use_ssl and MINI_SETUP and (not SSL_CERT_FILE.is_file() or not SSL_KEY_FILE.is_file()):
+        log.info("Erzeuge selbstsigniertes Zertifikat in %s …", MINI_FILES)
+        _gen_self_signed_cert(SSL_CERT_FILE, SSL_KEY_FILE)
+    if use_ssl and not (SSL_CERT_FILE.is_file() and SSL_KEY_FILE.is_file()):
+        log.error("MINI_SSL aktiv, aber Zertifikat fehlt und konnte nicht erzeugt werden.")
+        use_ssl = False
+
+    fp = ""
+    if use_ssl and SSL_CERT_FILE.is_file():
+        fp = _cert_fingerprint_sha256(SSL_CERT_FILE)
+        (MINI_FILES / "fingerprint.txt").write_text(fp + "\n", encoding="utf-8")
+
+    scheme = "https" if use_ssl else "http"
+    base = f"{scheme}://{lan_ip()}:{PORT}"
+    # Kompaktes Setup-Payload fuer QR / Zwischenablage (App parst dtmini:1|…)
+    parts = ["dtmini:1", base]
+    if token:
+        parts.append(token)
+    else:
+        parts.append("")
+    if fp:
+        parts.append(fp)
+    setup_uri = "|".join(parts)
+    SETUP_FILE.write_text(setup_uri + "\n", encoding="utf-8")
+    (MINI_FILES / "url.txt").write_text(base + "\n", encoding="utf-8")
+
+    _write_qr_png(MINI_FILES / "qr-setup.png", setup_uri)
+    if token:
+        _write_qr_png(MINI_FILES / "qr-token.png", f"dtmini:token|{token}")
+    if fp:
+        # Nur Zertifikat-Fingerprint (+ URL-Schema-Hinweis)
+        _write_qr_png(MINI_FILES / "qr-cert.png", f"dtmini:cert|{fp}|{base}")
+
+    ssl_ctx = None
+    if use_ssl:
+        import ssl
+        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_ctx.load_cert_chain(str(SSL_CERT_FILE), str(SSL_KEY_FILE))
+
+    log.info("Setup-String (QR/App): %s", setup_uri)
+    log.info("Dateien in %s: setup.txt, qr-setup.png%s%s",
+             MINI_FILES,
+             ", token.txt" if token else "",
+             ", server.crt/key" if use_ssl else "")
+    return token, ssl_ctx, setup_uri
+
+
+@web.middleware
+async def token_middleware(request, handler):
+    """Wenn MINI_TOKEN gesetzt: X-Mini-Token Header oder ?token= erforderlich (ausser /ping)."""
+    token = MINI_TOKEN
+    if not token:
+        return await handler(request)
+    path = request.path
+    if path in ("/ping",):
+        return await handler(request)
+    got = request.headers.get("X-Mini-Token") or request.rel_url.query.get("token") or ""
+    if got != token:
+        return web.Response(status=401, text="unauthorized: missing or bad token")
+    return await handler(request)
+
+
+async def h_setup(request):
+    """Liefert setup.txt / Hinweis (nur aus privatem Netz sinnvoll; Token steht in der Datei)."""
+    if SETUP_FILE.is_file():
+        body = SETUP_FILE.read_text(encoding="utf-8")
+    else:
+        body = "no setup yet"
+    return web.Response(text=body, content_type="text/plain; charset=utf-8")
+
+
+async def h_qr(request):
+    """PNG des Setup-QR (qr-setup.png)."""
+    path = MINI_FILES / "qr-setup.png"
+    kind = request.rel_url.query.get("t", "setup")
+    if kind == "token":
+        path = MINI_FILES / "qr-token.png"
+    elif kind == "cert":
+        path = MINI_FILES / "qr-cert.png"
+    if not path.is_file():
+        raise web.HTTPNotFound(text="qr not found")
+    data = path.read_bytes()
+    return web.Response(body=data, content_type="image/png", headers={"Cache-Control": "no-store"})
+
+
 # --------------------------------------------------------------------------- Start
 
 async def on_start(app):
@@ -1279,16 +1517,38 @@ def lan_ip():
 
 
 def main():
-    app = web.Application()
+    # lange (eingefuegte) Texte kommen per GET-URL: Zeilenlimit erhoehen
+    token, ssl_ctx, setup_uri = prepare_security()
+    app = web.Application(
+        middlewares=[token_middleware],
+        handler_args={"max_line_size": 65536, "max_field_size": 65536},
+    )
     app["sessions"] = {}
+    app["setup_uri"] = setup_uri
     app.on_startup.append(on_start)
     app.on_cleanup.append(on_stop)
-    app.add_routes([web.get("/ping", h_ping), web.get("/load", h_load), web.get("/tap", h_tap),
-                    web.get("/type", h_type), web.get("/back", h_back), web.get("/state", h_state),
-                    web.get("/img", h_img), web.get("/download", h_download)])
-    log.info("Echtes Geraet: http://%s:%d   |   Android-Emulator: http://10.0.2.2:%d", lan_ip(), PORT, PORT)
-    web.run_app(app, host=HOST, port=PORT, print=None)
+    app.add_routes([
+        web.get("/ping", h_ping),
+        web.get("/load", h_load),
+        web.get("/tap", h_tap),
+        web.get("/type", h_type),
+        web.get("/back", h_back),
+        web.get("/state", h_state),
+        web.get("/img", h_img),
+        web.get("/download", h_download),
+        web.get("/setup", h_setup),
+        web.get("/qr", h_qr),
+    ])
+    scheme = "https" if ssl_ctx else "http"
+    log.info("Echtes Geraet: %s://%s:%d   |   Android-Emulator: %s://10.0.2.2:%d",
+             scheme, lan_ip(), PORT, scheme, PORT)
+    if token:
+        log.info("Token-Auth aktiv (Header X-Mini-Token oder ?token=)")
+    if ssl_ctx:
+        log.info("TLS aktiv – Zertifikat: %s", SSL_CERT_FILE)
+    web.run_app(app, host=HOST, port=PORT, ssl_context=ssl_ctx, print=None)
 
 
 if __name__ == "__main__":
     main()
+    
