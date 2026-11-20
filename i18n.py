@@ -23,6 +23,48 @@ TRANSLATIONS = {
         "page_read_failed": "Seite konnte nicht ausgelesen werden",
         "address_not_allowed": "Adresse nicht erlaubt (interne Adresse)",
     },
+    "es": {
+        "error_prefix": "Error: ",
+        "error_title": "Error",
+        "page_read_failed": "No se pudo leer la página",
+        "address_not_allowed": "Dirección no permitida (dirección interna)",
+    },
+    "fr": {
+        "error_prefix": "Erreur : ",
+        "error_title": "Erreur",
+        "page_read_failed": "Impossible de lire la page",
+        "address_not_allowed": "Adresse non autorisée (adresse interne)",
+    },
+    "it": {
+        "error_prefix": "Errore: ",
+        "error_title": "Errore",
+        "page_read_failed": "Impossibile leggere la pagina",
+        "address_not_allowed": "Indirizzo non consentito (indirizzo interno)",
+    },
+    "tr": {
+        "error_prefix": "Hata: ",
+        "error_title": "Hata",
+        "page_read_failed": "Sayfa okunamadı",
+        "address_not_allowed": "Adrese izin verilmiyor (dahili adres)",
+    },
+    "ru": {
+        "error_prefix": "Ошибка: ",
+        "error_title": "Ошибка",
+        "page_read_failed": "Не удалось прочитать страницу",
+        "address_not_allowed": "Адрес не разрешён (внутренний адрес)",
+    },
+    "ja": {
+        "error_prefix": "エラー：",
+        "error_title": "エラー",
+        "page_read_failed": "ページを読み取れませんでした",
+        "address_not_allowed": "このアドレスは許可されていません（内部アドレス）",
+    },
+    "zh": {
+        "error_prefix": "错误：",
+        "error_title": "错误",
+        "page_read_failed": "无法读取页面",
+        "address_not_allowed": "不允许的地址（内部地址）",
+    },
 }
 
 

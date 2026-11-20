@@ -102,7 +102,7 @@ MINI_TOKEN = os.environ.get("MINI_TOKEN", "").strip()
 MINI_SSL = os.environ.get("MINI_SSL", "0") == "1"
 MINI_SETUP = os.environ.get("MINI_SETUP", "1") != "0"
 # Oeffentliche Adresse fuer QR/Setup (Host-LAN-IP oder Domain). In Docker sonst nur Container-IP!
-# Beispiel: MINI_PUBLIC_HOST=192.168.0.52   oder   MINI_PUBLIC_URL=https://192.168.0.52:8051
+# Beispiel: MINI_PUBLIC_HOST=192.168.1.50   oder   MINI_PUBLIC_URL=https://192.168.1.50:8080
 MINI_PUBLIC_HOST = os.environ.get("MINI_PUBLIC_HOST", "").strip()
 MINI_PUBLIC_URL = os.environ.get("MINI_PUBLIC_URL", "").strip().rstrip("/")
 SSL_CERT_FILE = MINI_FILES / "server.crt"
@@ -1506,7 +1506,7 @@ def prepare_security():
         if not MINI_PUBLIC_HOST and not MINI_PUBLIC_URL and _is_probably_docker_bridge(host_only):
             log.warning(
                 "Setup-URL nutzt vermutlich Docker-IP %s – vom Handy nicht erreichbar. "
-                "Setze MINI_PUBLIC_HOST auf deine LAN-IP (z.B. 192.168.0.52) und "
+                "Setze MINI_PUBLIC_HOST auf deine LAN-IP (z.B. 192.168.1.50) und "
                 "loesche minifiles/server.crt + server.key, dann neu starten.",
                 host_only,
             )
