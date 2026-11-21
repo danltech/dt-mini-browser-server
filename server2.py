@@ -56,6 +56,7 @@ Client kann ?lang=de|en senden; sonst MINI_FALLBACK_LANG.
 """
 
 import asyncio
+import re
 import base64
 import gzip
 import io
@@ -124,6 +125,14 @@ def build_ua(android_ver="13", model="Pixel 7"):
     return (f"Mozilla/5.0 (Linux; Android {android_ver}; {model}) "
             f"AppleWebKit/537.36 (KHTML, like Gecko) "
             f"Chrome/{CHROME_VER} Mobile Safari/537.36 {UA_PRODUCT}")
+
+def google_ua():
+    """Konsistenter, moderner UA nur fuer Google-Seiten (ohne Zusatz-Token, aktuelles Android)."""
+    return (f"Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{CHROME_VER} Mobile Safari/537.36")
+
+def is_google_host(host):
+    return bool(re.search(r"(^|\.)(google\.[a-z.]+|gstatic\.com|googleapis\.com|youtube\.com)$", host or ""))
 
 UA = build_ua()  # Default bis Client-Daten kommen
 BLOCK_HOSTS = ("doubleclick.net", "googlesyndication.com", "google-analytics.com",
@@ -791,6 +800,9 @@ async def new_session(app, sid, w, h, dpr, cid=None, android_ver=None, model=Non
             log.info("Lade gespeicherten State fuer cid=%s", cid[:12])
     ctx = await app["browser"].new_context(**kw)
     await ctx.add_init_script(INIT_JS)
+    await ctx.add_init_script(
+        "if (/(^|\\.)(google\\.[a-z.]+|youtube\\.com)$/.test(location.hostname)) "
+        "Object.defineProperty(Navigator.prototype,'userAgent',{get:()=>%r});" % google_ua())
     if MINI_COOKIES:
         await ctx.add_init_script(COOKIE_JS)
 
@@ -803,6 +815,10 @@ async def new_session(app, sid, w, h, dpr, cid=None, android_ver=None, model=Non
             if not await url_allowed(req.url):
                 log.warning("blockiert (intern): %s", req.url)
                 return await route.abort()
+            if is_google_host(host):
+                h = dict(req.headers)
+                h["user-agent"] = google_ua()
+                return await route.continue_(headers=h)
             await route.continue_()
         except Exception:
             pass
