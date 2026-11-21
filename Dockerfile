@@ -12,7 +12,7 @@ ENV PYTHONUNBUFFERED=1 \
     MINI_HOST=0.0.0.0 \
     MINI_PORT=8080 \
     MINI_NO_SANDBOX=1 \
-    MINI_LOCALE=en-US
+    MINI_LOCALE=en-US \
     MINI_COOKIES=0
 
 # Distro Chromium (Debian security updates) + fonts.
