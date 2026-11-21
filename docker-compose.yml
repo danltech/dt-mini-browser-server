@@ -14,6 +14,7 @@ services:
       # MINI_TOKEN: "your-secret-token"   # otherwise generated into minifiles/token.txt
       # MINI_LOCALE: "en-US"
       # MINI_ALLOW_PRIVATE: "1"     # WARNING: disables internal-network protection
+      # MINI_COOKIES: "1"          # Disable Cookies, 0 = cookies enabled, 1 = cookies disabled
     volumes:
       - mini-data:/data             # sessions, downloads, debug output
       - ./minifiles:/data/minifiles # token, certificate, QR codes (qr-setup.png, setup.txt)

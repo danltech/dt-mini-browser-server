@@ -81,6 +81,8 @@ PORT = int(os.environ.get("MINI_PORT", "8080"))
 CHROME = os.environ.get("MINI_CHROME", "")
 LOCALE = os.environ.get("MINI_LOCALE", "en-US")
 SHOT = os.environ.get("MINI_SHOT", "1") != "0"
+# Cookie-Banner automatisch ablehnen/ausblenden (0 = aus)
+MINI_COOKIES = os.environ.get("MINI_COOKIES", "1") != "0"
 # MINI_ALLOW_PRIVATE=1 erlaubt private/interne Zieladressen (Standard: blockiert)
 ALLOW_PRIVATE = os.environ.get("MINI_ALLOW_PRIVATE") == "1"
 MAX_SESSIONS = 4
@@ -112,8 +114,8 @@ SETUP_FILE = MINI_FILES / "setup.txt"
 
 # Fallback, wird beim Start durch echte Chromium-Version ersetzt
 CHROME_VER = "156.0.0.0"
-UA_PRODUCT = "DTMiniBrowser-Alpha/0.9-r4"
-DTMB_VER = "0.9-r4"
+UA_PRODUCT = "DTMiniBrowser-Beta/1.0-r2"
+DTMB_VER = "beta1.0-r2"
 
 def build_ua(android_ver="13", model="Pixel 7"):
     """Baut einen Mobile-Chrome-UA mit echter Chrome-Version + Client-Gerätedaten."""
@@ -141,6 +143,35 @@ INIT_JS = r"""
     if (a) a.target = '_self';
   }, true);
   window.open = (u) => { if (u) location.href = u; return null; };
+})();
+"""
+
+COOKIE_JS = r"""
+(() => {
+  const REJ = /^(alle )?(ablehnen|nur (notwendige|erforderliche|essenzielle)|notwendige( cookies)? (akzeptieren|zulassen)|reject( all)?|decline|deny|refuse|only (necessary|essential)|necessary only|continue without accepting|weiter ohne zustimmung|ohne zustimmung fortfahren)\b/i;
+  const SEL = '#onetrust-reject-all-handler,#CybotCookiebotDialogBodyButtonDecline,.fc-cta-do-not-consent,#didomi-notice-disagree-button,.cmp-button-reject,[data-testid="uc-deny-all-button"],button[id*="reject" i],button[class*="reject" i],button[aria-label*="reject" i],button[aria-label*="ablehnen" i]';
+  const BOX = '[id*="cookie" i],[class*="cookie" i],[id*="consent" i],[class*="consent" i],[id*="onetrust" i],[id*="cmp" i],[class*="cmp-" i],[id*="sp_message" i],[id*="didomi" i],[id*="usercentrics" i],[role="dialog"],[aria-modal="true"]';
+  const tryReject = () => {
+    try {
+      let b = document.querySelector(SEL);
+      if (!b) {
+        for (const box of document.querySelectorAll(BOX)) {
+          const cs = getComputedStyle(box);
+          if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+          for (const el of box.querySelectorAll('button,a,[role=button],input[type=button],input[type=submit]')) {
+            const t = (el.innerText || el.value || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+            if (t.length < 40 && REJ.test(t)) { b = el; break; }
+          }
+          if (b) break;
+        }
+      }
+      if (b) { b.click(); return true; }
+    } catch (e) {}
+    return false;
+  };
+  let n = 0;
+  const iv = setInterval(() => { if (tryReject() || ++n > 12) clearInterval(iv); }, 700);
+  document.addEventListener('DOMContentLoaded', tryReject);
 })();
 """
 
@@ -760,6 +791,8 @@ async def new_session(app, sid, w, h, dpr, cid=None, android_ver=None, model=Non
             log.info("Lade gespeicherten State fuer cid=%s", cid[:12])
     ctx = await app["browser"].new_context(**kw)
     await ctx.add_init_script(INIT_JS)
+    if MINI_COOKIES:
+        await ctx.add_init_script(COOKIE_JS)
 
     async def guard(route):
         try:
@@ -1124,8 +1157,20 @@ async def h_tap(req):
                     except Exception as e:
                         log.warning("Tap-href goto: %s", short(e))
             else:
-                await page.evaluate("([x, y, w]) => scrollTo(Math.max(0, x - w / 2), Math.max(0, y - 150))",
-                                    [x, y, s.w])
+                fixed = await page.evaluate("""([x, y]) => {
+                    const vx = x - scrollX, vy = y - scrollY;
+                    if (vx < 0 || vy < 0 || vx > innerWidth || vy > innerHeight) return false;
+                    let el = document.elementFromPoint(vx, vy);
+                    while (el && el !== document.body) {
+                        const p = getComputedStyle(el).position;
+                        if (p === 'fixed' || p === 'sticky') return true;
+                        el = el.parentElement;
+                    }
+                    return false;
+                }""", [x, y])
+                if not fixed:
+                    await page.evaluate("([x, y, w]) => scrollTo(Math.max(0, x - w / 2), Math.max(0, y - 150))",
+                                        [x, y, s.w])
                 sx, sy = await page.evaluate("[scrollX, scrollY]")
                 vx, vy = x - sx, y - sy
                 await page.mouse.click(vx, vy, delay=40)
